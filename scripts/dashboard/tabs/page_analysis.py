@@ -27,6 +27,7 @@ from ..formatters import (
 )
 
 
+@st.fragment
 def tab_page_analysis(df: pd.DataFrame, all_urls: list[str],
                       filters: dict | None = None,
                       url_df: pd.DataFrame | None = None) -> None:
@@ -68,7 +69,7 @@ def tab_page_analysis(df: pd.DataFrame, all_urls: list[str],
     _lcp_col = "largestContentfulPaint"
     _w_col = "sample_count"
     _sub = page_df[[_lcp_col, _w_col, "datetime", "url_group"]].dropna(subset=[_lcp_col, _w_col])
-    _sub = _sub[_sub[_w_col] > 0]
+    _sub = _sub[_sub[_w_col] > 0].copy()
     _sub["_wv"] = _sub[_lcp_col] * _sub[_w_col]
     _g = _sub.groupby(["datetime", "url_group"])
     lcp_agg = (_g["_wv"].sum() / _g[_w_col].sum()).reset_index(name=_lcp_col)
@@ -331,7 +332,7 @@ def _render_metric_table(
             if label == "CLS":
                 formatted = f"{val:.2f}"
             elif val >= 1000:
-                formatted = f"{val / 1000:.0f} s"
+                formatted = f"{val / 1000:.1f} s"
             else:
                 formatted = f"{val:.0f} ms"
 

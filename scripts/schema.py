@@ -133,18 +133,14 @@ CREATE TABLE IF NOT EXISTS vitals (
     UNIQUE (timestamp, targetGroupedUrl, deviceType, connectionType, navigationType)
 );
 
-CREATE INDEX IF NOT EXISTS idx_vitals_timestamp
-    ON vitals (timestamp);
-
-CREATE INDEX IF NOT EXISTS idx_vitals_url
-    ON vitals (targetGroupedUrl);
-
-CREATE INDEX IF NOT EXISTS idx_vitals_device
-    ON vitals (deviceType);
-
--- Composite: most common dashboard query pattern
+-- Composite: covers timestamp-range + URL + device filter (most common pattern).
+-- Also serves as a timestamp-only index (SQLite uses leftmost prefix).
 CREATE INDEX IF NOT EXISTS idx_vitals_ts_url_device
     ON vitals (timestamp, targetGroupedUrl, deviceType);
+
+-- Composite: covers timestamp-range + network filter
+CREATE INDEX IF NOT EXISTS idx_vitals_ts_connection
+    ON vitals (timestamp, connectionType);
 
 -- Browser-level breakdown (separate FACET query from NR)
 CREATE TABLE IF NOT EXISTS vitals_browser (

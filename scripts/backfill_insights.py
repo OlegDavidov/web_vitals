@@ -66,6 +66,9 @@ def main() -> None:
 
     windows = _build_windows(args.days)
     total = len(windows)
+    if total == 0:
+        logger.warning("No complete windows to fetch for %d day(s). Nothing to do.", args.days)
+        return
     logger.info(
         "Windows to fetch: %d  (%s → %s UTC)",
         total,

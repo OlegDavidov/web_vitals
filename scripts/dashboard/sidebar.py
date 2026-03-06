@@ -48,6 +48,10 @@ def render_sidebar(opts: dict) -> dict:
                             end_time.hour, end_time.minute, end_time.second,
                             tzinfo=timezone.utc).timestamp())
 
+    if start_ts > end_ts:
+        st.sidebar.error("'From' date/time must be before 'To'.")
+        st.stop()
+
     # ── Dimension filters ─────────────────────────────────────────────────────
     st.sidebar.markdown("---")
     device     = st.sidebar.selectbox("Device",  ["All"] + opts["devices"])
@@ -57,11 +61,16 @@ def render_sidebar(opts: dict) -> dict:
     st.sidebar.markdown("---")
     quick_options = ["— All —"] + PINNED_URL_PATHS
     quick_url = st.sidebar.selectbox("Quick URL", quick_options, index=0)
-    url_filter = st.sidebar.text_input("URL contains",
-                                       placeholder="/product, /checkout …")
 
-    # Quick URL takes precedence over text input when selected
-    effective_url = quick_url if quick_url != "— All —" else url_filter.strip()
+    quick_active = quick_url != "— All —"
+    url_filter = st.sidebar.text_input(
+        "URL contains",
+        placeholder="/product, /checkout …",
+        disabled=quick_active,
+        help="Disabled while a Quick URL is selected" if quick_active else None,
+    )
+
+    effective_url = quick_url if quick_active else url_filter.strip()
 
     return {
         "start_ts":   start_ts,

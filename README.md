@@ -170,7 +170,7 @@ Three tables in `data/web_vitals.db`:
 | **Volume** | `sample_count` |
 
 **Unique constraint:** `(timestamp, targetGroupedUrl, deviceType, connectionType, navigationType)`
-**Indexes:** `timestamp`, `targetGroupedUrl`, `deviceType`, composite `(timestamp, targetGroupedUrl, deviceType)`
+**Indexes:** composite `(timestamp, targetGroupedUrl, deviceType)`, composite `(timestamp, connectionType)`
 
 ### `vitals_url` — URL-level aggregation (no device/network split)
 
@@ -261,7 +261,11 @@ web_vitals/
 | `MAX_RETRIES` | | `3` | HTTP retry attempts |
 | `RETRY_DELAY` | | `2.0` | Seconds between retries |
 | `REQUEST_SLEEP` | | `0.4` | Delay between API requests (rate-limit guard) |
+| `NR_SSL_VERIFY` | | `true` | SSL verification: `true`, `false`, or path to CA bundle |
+| `NR_BYPASS_PROXY` | | `false` | Bypass system proxy for NR requests (fixes HTTP 413) |
+| `NR_HTTPS_PROXY` | | _(system)_ | Route NR requests through a specific proxy URL |
 | `STREAMLIT_PORT` | | `8501` | Dashboard port |
+| `PINNED_URL_PATHS` | | _(none)_ | Comma-separated URL paths pinned to top of Page URLs table |
 
 ## Cron Job
 

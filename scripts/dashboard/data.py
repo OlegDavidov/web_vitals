@@ -3,35 +3,31 @@ from __future__ import annotations
 
 import logging
 import sqlite3
-from contextlib import contextmanager
-from collections.abc import Generator
 
 import pandas as pd
 import streamlit as st
 
 from config import DB_PATH
-from .formatters import normalize_url
+from .formatters import normalize_url_series
 
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Read-only connection (no commit overhead, safe for concurrent dashboard use)
+# Per-query read-only connections (thread-safe for concurrent users)
 # ---------------------------------------------------------------------------
 
-@contextmanager
-def _ro_conn() -> Generator[sqlite3.Connection, None, None]:
-    """Read-only WAL-mode connection for dashboard queries."""
+def _get_conn() -> sqlite3.Connection:
+    """Open a fresh read-only WAL-mode connection for a single query."""
     conn = sqlite3.connect(
         f"file:{DB_PATH}?mode=ro",
         uri=True,
         timeout=60,
-        check_same_thread=False,
     )
     conn.execute("PRAGMA query_only=ON")
-    try:
-        yield conn
-    finally:
-        conn.close()
+    # busy_timeout: wait up to 10s if writer holds a lock (cron update running)
+    # instead of failing immediately — important for concurrent dashboard users.
+    conn.execute("PRAGMA busy_timeout=10000")
+    return conn
 
 
 # ---------------------------------------------------------------------------
@@ -91,40 +87,67 @@ _AVG_TO_PCTS = {
     "largestContentfulPaint": ("lcp_p75", "lcp_p90", "lcp_p95"),
 }
 
+# INP outlier thresholds (in seconds, before ms conversion)
+_INP_AVG_OUTLIER = 30
+_INP_PCT_OUTLIER = 10
+
 
 def _clean_vitals_df(df: pd.DataFrame) -> pd.DataFrame:
     """Apply common cleanup to any vitals DataFrame (in-place, returns df)."""
-    # Nullify fake-zero percentiles where avg is NaN (NR percentile() bug)
+    # 1. Convert all relevant columns to numeric once (avoids duplicate to_numeric)
+    all_numeric: set[str] = set(_SECONDS_COLS)
+    for pcts in _AVG_TO_PCTS.values():
+        all_numeric.update(pcts)
+    all_numeric.update(("timeToFirstByte", "ttfb_p75", "ttfb_p90", "ttfb_p95"))
+    present_numeric = [c for c in all_numeric if c in df.columns]
+    if present_numeric:
+        df[present_numeric] = df[present_numeric].apply(pd.to_numeric, errors="coerce")
+
+    # 2. Nullify fake-zero percentiles where avg is NaN (NR percentile() bug)
     for avg_col, pct_cols in _AVG_TO_PCTS.items():
         if avg_col in df.columns:
-            null_mask = pd.to_numeric(df[avg_col], errors="coerce").isna()
+            null_mask = df[avg_col].isna()
             if null_mask.any():
                 for pc in pct_cols:
                     if pc in df.columns:
                         df.loc[null_mask, pc] = None
 
-    # INP outlier cleanup
+    # 3. INP outlier cleanup (already numeric from step 1)
     if "interactionToNextPaint" in df.columns:
-        df["interactionToNextPaint"] = pd.to_numeric(df["interactionToNextPaint"], errors="coerce")
-        df.loc[df["interactionToNextPaint"] > 30, "interactionToNextPaint"] = None
+        df.loc[df["interactionToNextPaint"] > _INP_AVG_OUTLIER, "interactionToNextPaint"] = None
     for col in ("inp_p75", "inp_p90", "inp_p95"):
         if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors="coerce")
-            df.loc[df[col] > 10, col] = None
+            df.loc[df[col] > _INP_PCT_OUTLIER, col] = None
 
-    # Convert seconds -> milliseconds for NR timing metrics
-    present = [c for c in _SECONDS_COLS if c in df.columns]
-    if present:
-        df[present] = df[present].apply(pd.to_numeric, errors="coerce") * 1000
+    # 4. Convert seconds -> milliseconds for NR timing metrics
+    present_secs = [c for c in _SECONDS_COLS if c in df.columns]
+    if present_secs:
+        df[present_secs] *= 1000
 
     return df
+
+
+# ---------------------------------------------------------------------------
+# LIKE escaping helper
+# ---------------------------------------------------------------------------
+
+def _escape_like(s: str) -> str:
+    """Escape SQL LIKE wildcards so user input is treated literally."""
+    return s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _add_url_filter(conditions: list[str], params: dict, url_filter: str) -> None:
+    """Append a LIKE condition with proper escaping if url_filter is non-empty."""
+    if url_filter:
+        conditions.append("targetGroupedUrl LIKE :url ESCAPE '\\'")
+        params["url"] = f"%{_escape_like(url_filter)}%"
 
 
 # ---------------------------------------------------------------------------
 # Cached data loaders
 # ---------------------------------------------------------------------------
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=300, max_entries=32)
 def load_vitals(
     start_ts: int,
     end_ts: int,
@@ -142,52 +165,115 @@ def load_vitals(
     if connection:
         conditions.append("connectionType = :connection")
         params["connection"] = connection
-    if url_filter:
-        conditions.append("targetGroupedUrl LIKE :url")
-        params["url"] = f"%{url_filter}%"
+    _add_url_filter(conditions, params, url_filter)
 
-    sql = f"SELECT {_VITALS_COLS} FROM vitals WHERE {' AND '.join(conditions)} ORDER BY timestamp"
+    # Safety limit: cap result set to avoid OOM on very large date ranges.
+    # 500K rows ≈ ~40 days at 12K rows/day — more than enough for any dashboard view.
+    _ROW_LIMIT = 500_000
+    sql = (
+        f"SELECT {_VITALS_COLS} FROM vitals"
+        f" WHERE {' AND '.join(conditions)}"
+        f" ORDER BY timestamp LIMIT {_ROW_LIMIT}"
+    )
 
-    with _ro_conn() as conn:
+    try:
+        conn = _get_conn()
+    except Exception:
+        logger.exception("Failed to open DB for vitals query")
+        return pd.DataFrame()
+
+    try:
         df = pd.read_sql_query(sql, conn, params=params)
+    except Exception:
+        logger.exception("Failed to load vitals")
+        return pd.DataFrame()
+    finally:
+        conn.close()
+
+    if len(df) >= _ROW_LIMIT:
+        logger.warning("load_vitals hit row limit (%d); results truncated", _ROW_LIMIT)
 
     if not df.empty:
         df["datetime"]  = pd.to_datetime(df["timestamp"], unit="s", utc=True)
-        df["url_group"] = df["targetGroupedUrl"].apply(normalize_url)
+        df["url_group"] = normalize_url_series(df["targetGroupedUrl"])
         _clean_vitals_df(df)
 
     return df
 
 
-@st.cache_data(ttl=600)
+@st.cache_data(ttl=600, max_entries=4)
 def load_filter_options() -> dict:
-    """Return distinct filter values and the DB timestamp range."""
-    with _ro_conn() as conn:
-        def _distinct(col: str, table: str = "vitals") -> list[str]:
-            return [
-                r[0]
-                for r in conn.execute(
-                    f"SELECT DISTINCT {col} FROM {table} WHERE {col} != '' ORDER BY 1"
+    """Return distinct filter values and the DB timestamp range (single query)."""
+    empty = {"devices": [], "connections": [], "urls": [], "min_ts": None, "max_ts": None}
+    try:
+        conn = _get_conn()
+    except Exception:
+        logger.warning("Cannot open DB for filter options (DB may not exist yet)")
+        return empty
+
+    try:
+        sql = """
+            SELECT 'device' AS kind, deviceType AS val FROM vitals
+                WHERE deviceType != '' GROUP BY deviceType
+            UNION ALL
+            SELECT 'conn', connectionType FROM vitals
+                WHERE connectionType != '' GROUP BY connectionType
+            UNION ALL
+            SELECT 'ts_min', CAST(MIN(timestamp) AS TEXT) FROM vitals
+            UNION ALL
+            SELECT 'ts_max', CAST(MAX(timestamp) AS TEXT) FROM vitals
+        """
+        rows = conn.execute(sql).fetchall()
+
+        devices: list[str] = []
+        connections: list[str] = []
+        min_ts = None
+        max_ts = None
+        for kind, val in rows:
+            if kind == "device":
+                devices.append(val)
+            elif kind == "conn":
+                connections.append(val)
+            elif kind == "ts_min" and val is not None:
+                min_ts = int(val)
+            elif kind == "ts_max" and val is not None:
+                max_ts = int(val)
+
+        devices.sort()
+        connections.sort()
+
+        # Use vitals_url (much smaller table) for the URL list when available;
+        # fall back to vitals if vitals_url doesn't exist yet.
+        try:
+            urls = [
+                r[0] for r in conn.execute(
+                    "SELECT DISTINCT targetGroupedUrl FROM vitals_url "
+                    "WHERE targetGroupedUrl != '' ORDER BY 1"
                 ).fetchall()
             ]
-
-        devices     = _distinct("deviceType")
-        connections = _distinct("connectionType")
-        urls        = _distinct("targetGroupedUrl")
-        ts_range    = conn.execute(
-            "SELECT MIN(timestamp), MAX(timestamp) FROM vitals"
-        ).fetchone()
+        except sqlite3.OperationalError:
+            urls = [
+                r[0] for r in conn.execute(
+                    "SELECT DISTINCT targetGroupedUrl FROM vitals "
+                    "WHERE targetGroupedUrl != '' ORDER BY 1"
+                ).fetchall()
+            ]
+    except Exception:
+        logger.exception("Failed to load filter options")
+        return empty
+    finally:
+        conn.close()
 
     return {
         "devices":     devices,
         "connections": connections,
         "urls":        urls,
-        "min_ts":      ts_range[0],
-        "max_ts":      ts_range[1],
+        "min_ts":      min_ts,
+        "max_ts":      max_ts,
     }
 
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=300, max_entries=16)
 def load_browser_vitals(
     start_ts: int,
     end_ts: int,
@@ -196,30 +282,40 @@ def load_browser_vitals(
     """Return browser-level vitals rows matching the given filters."""
     conditions = ["timestamp BETWEEN :start AND :end"]
     params: dict = {"start": start_ts, "end": end_ts}
+    _add_url_filter(conditions, params, url_filter)
 
-    if url_filter:
-        conditions.append("targetGroupedUrl LIKE :url")
-        params["url"] = f"%{url_filter}%"
-
-    sql = f"SELECT {_BROWSER_COLS} FROM vitals_browser WHERE {' AND '.join(conditions)} ORDER BY timestamp"
+    _ROW_LIMIT = 500_000
+    sql = (
+        f"SELECT {_BROWSER_COLS} FROM vitals_browser"
+        f" WHERE {' AND '.join(conditions)}"
+        f" ORDER BY timestamp LIMIT {_ROW_LIMIT}"
+    )
 
     try:
-        with _ro_conn() as conn:
-            df = pd.read_sql_query(sql, conn, params=params)
+        conn = _get_conn()
+    except Exception:
+        logger.exception("Failed to open DB for browser vitals query")
+        return pd.DataFrame()
+
+    try:
+        df = pd.read_sql_query(sql, conn, params=params)
     except Exception:
         logger.exception("Failed to load browser vitals")
         return pd.DataFrame()
+    finally:
+        conn.close()
 
     if not df.empty:
-        df["url_group"] = df["targetGroupedUrl"].apply(normalize_url)
-        df["browser"] = df["userAgentName"].fillna("") + ", " + df["userAgentVersion"].fillna("")
-        df["browser"] = df["browser"].str.strip(", ")
+        df["url_group"] = normalize_url_series(df["targetGroupedUrl"])
+        name = df["userAgentName"].fillna("")
+        ver  = df["userAgentVersion"].fillna("")
+        df["browser"] = (name + " " + ver).str.strip()
         _clean_vitals_df(df)
 
     return df
 
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=300, max_entries=32)
 def load_url_vitals(
     start_ts: int,
     end_ts: int,
@@ -228,31 +324,49 @@ def load_url_vitals(
     """Return URL-level vitals (accurate overall percentiles, no device split)."""
     conditions = ["timestamp BETWEEN :start AND :end"]
     params: dict = {"start": start_ts, "end": end_ts}
+    _add_url_filter(conditions, params, url_filter)
 
-    if url_filter:
-        conditions.append("targetGroupedUrl LIKE :url")
-        params["url"] = f"%{url_filter}%"
-
-    sql = f"SELECT {_URL_COLS} FROM vitals_url WHERE {' AND '.join(conditions)} ORDER BY timestamp"
+    _ROW_LIMIT = 500_000
+    sql = (
+        f"SELECT {_URL_COLS} FROM vitals_url"
+        f" WHERE {' AND '.join(conditions)}"
+        f" ORDER BY timestamp LIMIT {_ROW_LIMIT}"
+    )
 
     try:
-        with _ro_conn() as conn:
-            df = pd.read_sql_query(sql, conn, params=params)
+        conn = _get_conn()
+    except Exception:
+        logger.exception("Failed to open DB for URL vitals query")
+        return pd.DataFrame()
+
+    try:
+        df = pd.read_sql_query(sql, conn, params=params)
     except Exception:
         logger.exception("Failed to load URL vitals")
         return pd.DataFrame()
+    finally:
+        conn.close()
 
     if not df.empty:
         df["datetime"]  = pd.to_datetime(df["timestamp"], unit="s", utc=True)
-        df["url_group"] = df["targetGroupedUrl"].apply(normalize_url)
+        df["url_group"] = normalize_url_series(df["targetGroupedUrl"])
         _clean_vitals_df(df)
 
     return df
 
 
+@st.cache_data(ttl=300, max_entries=4)
 def db_has_data() -> bool:
     try:
-        with _ro_conn() as conn:
-            return conn.execute("SELECT 1 FROM vitals LIMIT 1").fetchone() is not None
+        conn = _get_conn()
     except Exception:
+        logger.warning("Cannot open DB for has_data check (DB may not exist yet)")
         return False
+
+    try:
+        return conn.execute("SELECT 1 FROM vitals LIMIT 1").fetchone() is not None
+    except Exception:
+        logger.exception("db_has_data check failed")
+        return False
+    finally:
+        conn.close()

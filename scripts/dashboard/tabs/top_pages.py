@@ -6,11 +6,12 @@ import plotly.express as px
 import streamlit as st
 
 from ..constants import PINNED_URL_PATHS
-from ..formatters import normalize_url, weighted_mean_grouped
+from ..formatters import normalize_url_series, weighted_mean_grouped
 
 _PAGE_SIZE_OPTIONS = [50, 100, 200]
 
 
+@st.fragment
 def tab_top_pages(df: pd.DataFrame, url_df: pd.DataFrame | None = None) -> None:
     if df.empty:
         st.info("No data for the selected filters.")
@@ -64,7 +65,7 @@ def tab_top_pages(df: pd.DataFrame, url_df: pd.DataFrame | None = None) -> None:
 
     # Pin priority URLs to top
     pinned_index = {p: i for i, p in enumerate(PINNED_URL_PATHS)}
-    agg["_path"] = agg["URL"].apply(normalize_url)
+    agg["_path"] = normalize_url_series(agg["URL"])
     agg["_pin"]  = agg["_path"].map(pinned_index)
 
     pinned_df = (

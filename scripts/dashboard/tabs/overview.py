@@ -117,8 +117,14 @@ def tab_overview(df: pd.DataFrame, url_df: pd.DataFrame | None = None) -> None:
 
     st.markdown("---")
 
-    # ── Trend charts (use url_df for accurate percentile traces) ─────────────
+    # ── Trend charts + volume (isolated in a fragment to avoid full reruns) ──
     chart_df = pctl_df if has_url else df
+    _render_trend_charts(chart_df, df)
+
+
+@st.fragment
+def _render_trend_charts(chart_df: pd.DataFrame, faceted_df: pd.DataFrame) -> None:
+    """Trend charts + volume bar — wrapped in @st.fragment to avoid full-page reruns."""
     col_left, col_right = st.columns(2)
     with col_left:
         st.plotly_chart(
@@ -149,8 +155,8 @@ def tab_overview(df: pd.DataFrame, url_df: pd.DataFrame | None = None) -> None:
             use_container_width=True,
         )
 
-    # ── Page view volume (from faceted df — has device/connection granularity)
-    st.plotly_chart(volume_bar_chart(df), use_container_width=True)
+    # Page view volume (from faceted df — has device/connection granularity)
+    st.plotly_chart(volume_bar_chart(faceted_df), use_container_width=True)
 
 
 def _render_worst_pages(df: pd.DataFrame, weights: pd.Series) -> None:

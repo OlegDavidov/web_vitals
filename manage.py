@@ -37,6 +37,7 @@ VENV_STREAMLIT = VENV_DIR / "bin" / "streamlit"
 DATA_DIR = BASE_DIR / "data"
 DB_DEFAULT = DATA_DIR / "web_vitals.db"
 PID_FILE = DATA_DIR / "dashboard.pid"
+DASHBOARD_LOG = DATA_DIR / "logs" / "dashboard.log"
 SYSTEMD_SERVICE_NAME = "web-vitals-dashboard"
 SYSTEMD_SERVICE_DIR = Path.home() / ".config" / "systemd" / "user"
 
@@ -151,26 +152,45 @@ def _migrate_db(db: Path) -> None:
     sys.path.insert(0, str(SCRIPTS_DIR))
     from schema import MIGRATION_COLUMNS, CREATE_VITALS_BROWSER, CREATE_VITALS_URL  # noqa: PLC0415
 
-    conn = sqlite3.connect(db)
-    existing = {row[1] for row in conn.execute("PRAGMA table_info(vitals)").fetchall()}
-    added = []
-    for col, col_type in MIGRATION_COLUMNS.items():
-        if col not in existing:
-            conn.execute(f"ALTER TABLE vitals ADD COLUMN {col} {col_type}")
-            added.append(col)
+    conn = sqlite3.connect(db, timeout=30)
+    try:
+        existing = {row[1] for row in conn.execute("PRAGMA table_info(vitals)").fetchall()}
+        added = []
+        for col, col_type in MIGRATION_COLUMNS.items():
+            if col not in existing:
+                conn.execute(f"ALTER TABLE vitals ADD COLUMN {col} {col_type}")
+                added.append(col)
 
-    # Create tables that were added after the initial schema release
-    tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
-    for table_name, ddl in [("vitals_browser", CREATE_VITALS_BROWSER),
-                             ("vitals_url", CREATE_VITALS_URL)]:
-        if table_name not in tables:
-            conn.executescript(ddl)
-            added.append(f"{table_name} (table)")
+        # Create tables that were added after the initial schema release
+        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+        for table_name, ddl in [("vitals_browser", CREATE_VITALS_BROWSER),
+                                 ("vitals_url", CREATE_VITALS_URL)]:
+            if table_name not in tables:
+                conn.executescript(ddl)
+                added.append(f"{table_name} (table)")
 
-    conn.commit()
-    conn.close()
-    if added:
-        _ok(f"Schema migrated — added: {', '.join(added)}")
+        # Add new composite index for network-filter queries
+        existing_indexes = {r[1] for r in conn.execute("PRAGMA index_list(vitals)").fetchall()}
+        idx_changes: list[str] = []
+        if "idx_vitals_ts_connection" not in existing_indexes:
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_vitals_ts_connection ON vitals (timestamp, connectionType)")
+            idx_changes.append("+idx_vitals_ts_connection")
+        # Drop redundant single-column indexes (covered by composites)
+        for old_idx in ("idx_vitals_timestamp", "idx_vitals_url", "idx_vitals_device"):
+            if old_idx in existing_indexes:
+                conn.execute(f"DROP INDEX IF EXISTS {old_idx}")
+                idx_changes.append(f"-{old_idx}")
+
+        conn.commit()
+    finally:
+        conn.close()
+    if added or idx_changes:
+        parts = []
+        if added:
+            parts.append(f"columns: {', '.join(added)}")
+        if idx_changes:
+            parts.append(f"indexes: {', '.join(idx_changes)}")
+        _ok(f"Schema migrated — {'; '.join(parts)}")
 
 
 def _db_stats(conn: sqlite3.Connection) -> dict:
@@ -203,7 +223,7 @@ def cmd_init(args: argparse.Namespace) -> None:
     db = _db_path()
     if db.exists():
         try:
-            conn = sqlite3.connect(db)
+            conn = sqlite3.connect(db, timeout=30)
             stats = _db_stats(conn)
             conn.close()
 
@@ -257,7 +277,7 @@ def cmd_update(args: argparse.Namespace) -> None:
     if db.exists():
         try:
             _migrate_db(db)
-            conn = sqlite3.connect(db)
+            conn = sqlite3.connect(db, timeout=30)
             stats = _db_stats(conn)
             conn.close()
 
@@ -336,17 +356,63 @@ def cmd_dashboard_start(args: argparse.Namespace) -> None:
         return
 
     DATA_DIR.mkdir(parents=True, exist_ok=True)
+    DASHBOARD_LOG.parent.mkdir(parents=True, exist_ok=True)
 
+    # Launch a supervisor process that auto-restarts Streamlit on crash.
+    supervisor_code = f"""
+import subprocess, signal, sys, time, os
+from pathlib import Path
+
+cmd = {[str(VENV_STREAMLIT)] + _streamlit_argv(port)[1:]!r}
+log_path = {str(DASHBOARD_LOG)!r}
+pid_file = {str(PID_FILE)!r}
+stop = False
+
+def _handle_term(signum, frame):
+    global stop
+    stop = True
+
+signal.signal(signal.SIGTERM, _handle_term)
+signal.signal(signal.SIGINT, _handle_term)
+
+while not stop:
+    log_fh = open(log_path, "a")
+    try:
+        proc = subprocess.Popen(cmd, stdout=log_fh, stderr=log_fh)
+        log_fh.write(f"[supervisor] started streamlit PID {{proc.pid}}\\n")
+        log_fh.flush()
+        while not stop:
+            try:
+                rc = proc.wait(timeout=1)
+                break
+            except subprocess.TimeoutExpired:
+                continue
+        if stop:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+            break
+        log_fh.write(f"[supervisor] streamlit exited with code {{rc}}, restarting...\\n")
+        log_fh.flush()
+    finally:
+        log_fh.close()
+    time.sleep(1)
+
+Path(pid_file).unlink(missing_ok=True)
+"""
     proc = subprocess.Popen(
-        [str(VENV_STREAMLIT)] + _streamlit_argv(port)[1:],
+        [str(VENV_PYTHON), "-c", supervisor_code],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         start_new_session=True,
     )
     PID_FILE.write_text(str(proc.pid))
 
-    _ok(f"Dashboard started  (PID {proc.pid})")
+    _ok(f"Dashboard started  (supervisor PID {proc.pid})")
     _info(f"URL  : http://localhost:{port}")
+    _info(f"Log  : {DASHBOARD_LOG}")
     _info(f"Stop : python manage.py dashboard stop")
 
 
@@ -361,7 +427,9 @@ def cmd_dashboard_stop(args: argparse.Namespace) -> None:
         return
 
     try:
-        os.kill(pid, signal.SIGTERM)
+        # Send SIGTERM to the whole process group (supervisor + streamlit)
+        pgid = os.getpgid(pid)
+        os.killpg(pgid, signal.SIGTERM)
         # Wait up to 5 s for graceful shutdown
         import time
         for _ in range(10):
@@ -371,9 +439,9 @@ def cmd_dashboard_stop(args: argparse.Namespace) -> None:
             except ProcessLookupError:
                 break
         else:
-            os.kill(pid, signal.SIGKILL)
+            os.killpg(pgid, signal.SIGKILL)
             _warn("Process did not exit cleanly — sent SIGKILL.")
-    except ProcessLookupError:
+    except (ProcessLookupError, PermissionError):
         pass
 
     PID_FILE.unlink(missing_ok=True)
@@ -396,6 +464,9 @@ def cmd_dashboard_autostart_install(args: argparse.Namespace) -> None:
         [str(VENV_STREAMLIT)] + _streamlit_argv(port)[1:]
     )
 
+    log_dir = DATA_DIR / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+
     service_content = f"""\
 [Unit]
 Description=Web Vitals Dashboard
@@ -405,8 +476,10 @@ After=network.target
 Type=simple
 WorkingDirectory={BASE_DIR}
 ExecStart={exec_start}
-Restart=on-failure
-RestartSec=5
+Restart=always
+RestartSec=1
+StandardOutput=append:{log_dir}/dashboard.log
+StandardError=append:{log_dir}/dashboard.log
 
 [Install]
 WantedBy=default.target
@@ -672,7 +745,7 @@ def cmd_db_check(args: argparse.Namespace) -> None:
 
 def _print_db_stats(db: Path) -> None:
     try:
-        conn = sqlite3.connect(db)
+        conn = sqlite3.connect(db, timeout=30)
         stats = _db_stats(conn)
         urls = conn.execute(
             "SELECT COUNT(DISTINCT targetGroupedUrl) FROM vitals"

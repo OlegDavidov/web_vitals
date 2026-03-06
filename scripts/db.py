@@ -29,6 +29,9 @@ def get_conn() -> Generator[sqlite3.Connection, None, None]:
     # NORMAL sync: safe enough for this use-case, faster than FULL
     conn.execute("PRAGMA synchronous=NORMAL")
     conn.execute("PRAGMA foreign_keys=ON")
+    # busy_timeout: wait up to 30s if another connection holds a lock
+    # (e.g. dashboard readers active during cron update)
+    conn.execute("PRAGMA busy_timeout=30000")
     try:
         yield conn
         conn.commit()

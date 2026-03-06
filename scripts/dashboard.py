@@ -12,6 +12,8 @@ from pathlib import Path
 # Ensure scripts/ is on sys.path so the dashboard package can import config/db
 sys.path.insert(0, str(Path(__file__).parent))
 
+from config import setup_logging  # noqa: E402
 from dashboard.app import main  # noqa: E402
 
+setup_logging("dashboard")
 main()

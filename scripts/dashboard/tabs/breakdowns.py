@@ -9,6 +9,7 @@ from ..charts import bar_breakdown_chart
 from ..constants import METRIC_COLS
 
 
+@st.fragment
 def tab_breakdowns(df: pd.DataFrame) -> None:
     st.subheader("Performance by Device & Network")
 
@@ -42,7 +43,7 @@ def tab_breakdowns(df: pd.DataFrame) -> None:
 
         # Vectorized heatmap: weighted mean per (device, network)
         sub = df[["deviceType", "connectionType", col, "sample_count"]].dropna(subset=[col, "sample_count"])
-        sub = sub[sub["sample_count"] > 0]
+        sub = sub[sub["sample_count"] > 0].copy()
         if not sub.empty:
             sub["_wv"] = sub[col] * sub["sample_count"]
             g = sub.groupby(["deviceType", "connectionType"])

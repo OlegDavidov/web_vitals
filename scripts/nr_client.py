@@ -141,13 +141,18 @@ LIMIT MAX
 """.strip()
 
 
+def _sanitize_nrql_string(s: str) -> str:
+    """Escape single quotes in a NRQL string literal to prevent injection."""
+    return s.replace("'", "\\'")
+
+
 def _build_nrql_from(template: str, since_epoch: int, until_epoch: int) -> str:
     """Build a NRQL query from *template* with standard WHERE filters."""
     conditions = []
     if NR_APP_NAME:
-        conditions.append(f"appName = '{NR_APP_NAME}'")
+        conditions.append(f"appName = '{_sanitize_nrql_string(NR_APP_NAME)}'")
     if NR_COUNTRY_CODE:
-        conditions.append(f"countryCode = '{NR_COUNTRY_CODE}'")
+        conditions.append(f"countryCode = '{_sanitize_nrql_string(NR_COUNTRY_CODE)}'")
     where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
     return template.format(
         event_type=NR_EVENT_TYPE,

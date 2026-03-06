@@ -28,6 +28,28 @@ def normalize_url(url: str) -> str:
     return path
 
 
+def normalize_url_series(s: pd.Series) -> pd.Series:
+    """Vectorized URL normalization — much faster than .apply(normalize_url)."""
+    result = s.copy()
+    # Handle https:// URLs — extract path
+    http_mask = result.str.startswith("http://") | result.str.startswith("https://")
+    if http_mask.any():
+        result.loc[http_mask] = result.loc[http_mask].str.replace(
+            r'^https?://[^/]*', '', regex=True,
+        )
+        # Empty path → "/"
+        empty = http_mask & (result == '')
+        if empty.any():
+            result.loc[empty] = '/'
+    # Handle NR grouped-URL format (host:port/path) — strip up to first /
+    nr_mask = (~http_mask) & result.str.match(r'^[^/]+:\d+/', na=False)
+    if nr_mask.any():
+        result.loc[nr_mask] = result.loc[nr_mask].str.replace(
+            r'^[^/]+', '', regex=True,
+        )
+    return result
+
+
 def weighted_mean(values: pd.Series, weights: pd.Series) -> float | None:
     """Return sample_count-weighted mean, or None if no valid data."""
     mask = values.notna() & weights.notna() & (weights > 0)
@@ -46,7 +68,9 @@ def weighted_mean_grouped(
     """Compute weighted means for multiple metrics in a single groupby.
 
     Returns a DataFrame indexed by *group_col* with one column per metric.
-    Much faster than calling weighted_mean() in N separate closures.
+    Uses per-metric weight masking so that NaN metric values do not
+    inflate the denominator (fixes underestimation when some rows
+    have NaN after outlier cleanup or NULL from NR).
     """
     present = [c for c in metric_cols if c in df.columns]
     if not present:
@@ -60,24 +84,23 @@ def weighted_mean_grouped(
         return pd.DataFrame()
 
     sw = subset[weight_col]
-    weighted = subset[present].multiply(sw, axis=0)
-    weighted[weight_col] = sw
-    weighted[group_col] = subset[group_col]
+    groups = subset[group_col]
 
-    grouped = weighted.groupby(group_col)
-    sums = grouped[present].sum()
-    w_sums = grouped[weight_col].sum()
+    # Numerator: value * weight (NaN propagates correctly via sum skipna)
+    weighted_vals = subset[present].multiply(sw, axis=0)
 
-    result = sums.div(w_sums, axis=0)
+    # Denominator: per-metric weights (zero where metric is NaN,
+    # so NaN rows don't inflate the divisor)
+    metric_weights = subset[present].notna().astype(float).multiply(sw, axis=0)
 
-    # Null out metrics where all original values were NaN
-    for col in present:
-        orig_valid = subset[col].notna()
-        if not orig_valid.all():
-            groups_with_data = subset.loc[orig_valid, group_col].unique()
-            null_groups = result.index.difference(groups_with_data)
-            if len(null_groups):
-                result.loc[null_groups, col] = None
+    weighted_vals[group_col] = groups.values
+    metric_weights[group_col] = groups.values
+
+    grp_vals = weighted_vals.groupby(group_col)[present].sum()
+    grp_weights = metric_weights.groupby(group_col)[present].sum()
+
+    # Avoid division by zero -> NaN for groups with no valid data
+    result = grp_vals / grp_weights.replace(0, float("nan"))
 
     return result
 

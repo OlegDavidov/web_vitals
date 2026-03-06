@@ -97,14 +97,14 @@ def tab_page_analysis(df: pd.DataFrame, all_urls: list[str],
         plot_bgcolor="rgba(0,0,0,0)",
         paper_bgcolor="rgba(0,0,0,0)",
     )
-    st.plotly_chart(fig_lcp, use_container_width=True)
+    st.plotly_chart(fig_lcp, width="stretch")
 
     # ── Summary table (prefer url_df for accurate p75) ──────────────────────
     has_url_data = url_df is not None and not url_df.empty
     summary_src = url_df[url_df["url_group"].isin(selected_urls)].copy() if has_url_data else page_df
     st.markdown("#### Metric summary per page")
     summary = _build_summary(summary_src)
-    st.dataframe(summary, hide_index=True, use_container_width=True)
+    st.dataframe(summary, hide_index=True, width="stretch")
 
     # ── Per-URL deep dive (single selection) ──────────────────────────────────
     if len(selected_urls) == 1:
@@ -237,7 +237,7 @@ def _render_device_breakdown(url_df: pd.DataFrame, url: str) -> None:
             plot_bgcolor="rgba(0,0,0,0)",
             paper_bgcolor="rgba(0,0,0,0)",
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
 
     with col_table:
         # Build table with LCP, INP, CLS per device
@@ -285,7 +285,7 @@ def _render_browser_breakdown(browser_df: pd.DataFrame, url: str) -> None:
             plot_bgcolor="rgba(0,0,0,0)",
             paper_bgcolor="rgba(0,0,0,0)",
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
 
     with col_table:
         metrics = [("LCP", "lcp_p75")]
@@ -374,5 +374,5 @@ def _render_single_url_charts(chart_df: pd.DataFrame, url: str) -> None:
         with target:
             st.plotly_chart(
                 time_series_chart(chart_df, col, label, key, pcts),
-                use_container_width=True,
+                width="stretch",
             )

@@ -130,33 +130,33 @@ def _render_trend_charts(chart_df: pd.DataFrame, faceted_df: pd.DataFrame) -> No
         st.plotly_chart(
             time_series_chart(chart_df, "largestContentfulPaint", "LCP over time",
                               "lcp", ["lcp_p75", "lcp_p90", "lcp_p95"]),
-            use_container_width=True,
+            width="stretch",
         )
         st.plotly_chart(
             time_series_chart(chart_df, "interactionToNextPaint", "INP over time",
                               "inp", ["inp_p75", "inp_p90", "inp_p95"]),
-            use_container_width=True,
+            width="stretch",
         )
         st.plotly_chart(
             time_series_chart(chart_df, "timeToFirstByte", "TTFB over time",
                               "ttfb", ["ttfb_p75", "ttfb_p90", "ttfb_p95"]),
-            use_container_width=True,
+            width="stretch",
         )
 
     with col_right:
         st.plotly_chart(
             time_series_chart(chart_df, "cumulativeLayoutShift", "CLS over time",
                               "cls", ["cls_p75", "cls_p90", "cls_p95"]),
-            use_container_width=True,
+            width="stretch",
         )
         st.plotly_chart(
             time_series_chart(chart_df, "firstContentfulPaint", "FCP over time",
                               "fcp", ["fcp_p75", "fcp_p90", "fcp_p95"]),
-            use_container_width=True,
+            width="stretch",
         )
 
     # Page view volume (from faceted df — has device/connection granularity)
-    st.plotly_chart(volume_bar_chart(faceted_df), use_container_width=True)
+    st.plotly_chart(volume_bar_chart(faceted_df), width="stretch")
 
 
 def _render_worst_pages(df: pd.DataFrame, weights: pd.Series) -> None:

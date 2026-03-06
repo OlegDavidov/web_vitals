@@ -31,14 +31,14 @@ def tab_breakdowns(df: pd.DataFrame) -> None:
         st.plotly_chart(
             bar_breakdown_chart(df, "deviceType", col,
                                 f"Avg {metric_choice} by Device"),
-            use_container_width=True,
+            width="stretch",
         )
 
     with col_right:
         st.plotly_chart(
             bar_breakdown_chart(df, "connectionType", col,
                                 f"Avg {metric_choice} by Network"),
-            use_container_width=True,
+            width="stretch",
         )
 
         # Vectorized heatmap: weighted mean per (device, network)
@@ -58,4 +58,4 @@ def tab_breakdowns(df: pd.DataFrame) -> None:
                     height=280,
                 )
                 fig_heat.update_layout(margin=dict(t=40, b=20, l=0, r=0))
-                st.plotly_chart(fig_heat, use_container_width=True)
+                st.plotly_chart(fig_heat, width="stretch")

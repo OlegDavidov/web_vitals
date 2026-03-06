@@ -5,7 +5,7 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-from ..constants import PINNED_URL_PATHS
+from ..constants import CWV_BG, CWV_COLOR, PINNED_URL_PATHS, THRESHOLDS
 from ..formatters import normalize_url_series, weighted_mean_grouped
 
 _PAGE_SIZE_OPTIONS = [50, 100, 200]
@@ -83,9 +83,10 @@ def tab_top_pages(df: pd.DataFrame, url_df: pd.DataFrame | None = None) -> None:
     remaining = max(0, n - len(pinned_df))
     result = pd.concat([pinned_df, other_df.head(remaining)], ignore_index=True)
 
-    # Table
+    # Table with threshold color-coding
+    styled = _style_table(_format_table(result))
     st.dataframe(
-        _format_table(result),
+        styled,
         column_config={
             "URL":         st.column_config.TextColumn("URL", width="large"),
             "avg_lcp":     st.column_config.NumberColumn("LCP avg (ms)"),
@@ -133,6 +134,56 @@ def tab_top_pages(df: pd.DataFrame, url_df: pd.DataFrame | None = None) -> None:
     if dive != "—":
         st.session_state["dive_url"] = dive
         st.info("Switch to the **Page Analysis** tab to see the full breakdown.")
+
+
+# Map display columns → threshold key
+_COL_THRESHOLD: dict[str, str] = {
+    "avg_lcp": "lcp", "p75_lcp": "lcp",
+    "avg_cls": "cls", "p75_cls": "cls",
+    "avg_inp": "inp", "p75_inp": "inp",
+    "avg_fcp": "fcp",
+    "avg_ttfb": "ttfb", "p75_ttfb": "ttfb",
+}
+
+
+def _cwv_status(value: float, metric_key: str) -> str:
+    """Return 'good', 'needs_improvement', or 'poor' for a value."""
+    t = THRESHOLDS.get(metric_key)
+    if t is None or pd.isna(value):
+        return ""
+    if value <= t["good"]:
+        return "good"
+    if value <= t["poor"]:
+        return "needs_improvement"
+    return "poor"
+
+
+def _style_table(df: pd.DataFrame) -> pd.io.formats.style.Styler:
+    """Apply green/yellow/red background to metric cells based on CWV thresholds."""
+    def _apply(col: pd.Series) -> list[str]:
+        key = _COL_THRESHOLD.get(col.name, "")
+        if not key:
+            return [""] * len(col)
+        styles = []
+        for v in col:
+            status = _cwv_status(v, key)
+            if status:
+                styles.append(
+                    f"background-color: {CWV_BG[status]}; color: {CWV_COLOR[status]}"
+                )
+            else:
+                styles.append("")
+        return styles
+
+    fmt: dict[str, str] = {}
+    for c in df.columns:
+        if c in ("avg_cls", "p75_cls"):
+            fmt[c] = "{:.3f}"
+        elif c == "total_views":
+            fmt[c] = "{:,.0f}"
+        elif c in _COL_THRESHOLD:
+            fmt[c] = "{:.0f}"
+    return df.style.apply(_apply).format(fmt, na_rep="None")
 
 
 def _format_table(agg: pd.DataFrame) -> pd.DataFrame:

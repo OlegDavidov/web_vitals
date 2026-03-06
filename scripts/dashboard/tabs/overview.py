@@ -8,7 +8,7 @@ import streamlit as st
 
 from ..charts import time_series_chart, volume_bar_chart
 from ..components import cwv_gauge_card, kpi_card
-from ..constants import CWV_COLOR, THRESHOLDS
+from ..constants import CWV_BG, CWV_COLOR, THRESHOLDS
 from ..formatters import (
     cwv_distribution,
     cwv_status,
@@ -208,13 +208,16 @@ def _render_worst_pages(df: pd.DataFrame, weights: pd.Series) -> None:
 
     rows_html = ""
     for _, r in worst_df.iterrows():
-        color = CWV_COLOR.get(r["_status"], CWV_COLOR["poor"])
+        status = r["_status"]
+        color = CWV_COLOR.get(status, CWV_COLOR["poor"])
+        bg = CWV_BG.get(status, "")
         safe_page = html_mod.escape(str(r["Page"]))
+        bg_style = f"background-color:{bg};" if bg else ""
         rows_html += (
             f'<tr>'
             f'<td style="max-width:300px;overflow:hidden;text-overflow:ellipsis">{safe_page}</td>'
             f'<td>{r["Metric"]}</td>'
-            f'<td style="color:{color};font-weight:700">{r["p75"]}</td>'
+            f'<td style="{bg_style}color:{color};font-weight:700;padding:4px 8px">{r["p75"]}</td>'
             f'<td style="text-align:right">{r["Views"]:,}</td>'
             f'</tr>'
         )

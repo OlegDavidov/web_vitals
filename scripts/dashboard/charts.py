@@ -57,15 +57,18 @@ def time_series_chart(
         x=agg["datetime"], y=agg[col],
         name="avg",
         line=dict(color="#4c9be8", width=2),
+        visible="legendonly",
     ))
 
     pct_colors = ["#f5a623", "#e86040", "#9b59b6"]
     for i, p in enumerate(pct_cols):
         if p in agg.columns:
+            label = p.split("_")[-1].upper()
             fig.add_trace(go.Scatter(
                 x=agg["datetime"], y=agg[p],
-                name=p.split("_")[-1].upper(),
+                name=label,
                 line=dict(color=pct_colors[i % len(pct_colors)], width=1.5, dash="dot"),
+                visible=True if label == "P75" else "legendonly",
             ))
 
     for shape in cwv_threshold_shapes(metric_key):

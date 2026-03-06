@@ -16,7 +16,7 @@ import streamlit as st
 
 from ..charts import time_series_chart
 from ..components import cwv_gauge_card
-from ..constants import CWV_COLOR, THRESHOLDS
+from ..constants import CWV_BG, CWV_COLOR, THRESHOLDS
 from ..formatters import (
     cwv_distribution,
     cwv_status,
@@ -104,7 +104,7 @@ def tab_page_analysis(df: pd.DataFrame, all_urls: list[str],
     summary_src = url_df[url_df["url_group"].isin(selected_urls)].copy() if has_url_data else page_df
     st.markdown("#### Metric summary per page")
     summary = _build_summary(summary_src)
-    st.dataframe(summary, hide_index=True, width="stretch")
+    st.dataframe(_style_summary(summary), hide_index=True, width="stretch")
 
     # ── Per-URL deep dive (single selection) ──────────────────────────────────
     if len(selected_urls) == 1:
@@ -179,6 +179,46 @@ def _build_summary(page_df: pd.DataFrame) -> pd.DataFrame:
         if c in summary.columns:
             summary[c] = pd.to_numeric(summary[c], errors="coerce").round(3)
     return summary
+
+
+# Map summary columns → threshold key
+_SUMMARY_THRESHOLD: dict[str, str] = {
+    "LCP_avg": "lcp", "LCP_p75": "lcp", "LCP_p90": "lcp",
+    "CLS_avg": "cls", "CLS_p75": "cls",
+    "INP_avg": "inp", "INP_p75": "inp",
+    "FCP_avg": "fcp",
+    "TTFB_avg": "ttfb", "TTFB_p75": "ttfb",
+}
+
+
+def _style_summary(df: pd.DataFrame) -> pd.io.formats.style.Styler:
+    """Apply green/yellow/red background to summary metric cells."""
+    def _apply(col: pd.Series) -> list[str]:
+        key = _SUMMARY_THRESHOLD.get(col.name, "")
+        if not key:
+            return [""] * len(col)
+        t = THRESHOLDS[key]
+        styles = []
+        for v in col:
+            if pd.isna(v):
+                styles.append("")
+            elif v <= t["good"]:
+                styles.append(f"background-color: {CWV_BG['good']}; color: {CWV_COLOR['good']}")
+            elif v <= t["poor"]:
+                styles.append(f"background-color: {CWV_BG['needs_improvement']}; color: {CWV_COLOR['needs_improvement']}")
+            else:
+                styles.append(f"background-color: {CWV_BG['poor']}; color: {CWV_COLOR['poor']}")
+        return styles
+
+    fmt: dict[str, str] = {}
+    for c in df.columns:
+        if c in ("CLS_avg", "CLS_p75"):
+            fmt[c] = "{:.3f}"
+        elif c == "Views":
+            fmt[c] = "{:,.0f}"
+        elif c in _SUMMARY_THRESHOLD:
+            fmt[c] = "{:.0f}"
+    return df.style.apply(_apply).format(fmt, na_rep="None")
 
 
 def _render_cwv_cards(url_df: pd.DataFrame, url: str) -> None:

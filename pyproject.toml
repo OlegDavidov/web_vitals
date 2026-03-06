@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "web-vitals-collector"
+version = "1.0.0"
+description = "Collect and visualize Web Vitals from New Relic"
+requires-python = ">=3.11"
+dependencies = [
+    "requests>=2.32.0",
+    "python-dotenv>=1.1.0",
+    "streamlit>=1.55.0",
+    "pandas>=2.3.0",
+    "plotly>=6.0.0",
+]
+
+# Console scripts — available after `pip install -e .`:
+#   wv init | wv update | wv dashboard
+#   wv cron install | wv cron remove | wv db check
+[project.scripts]
+wv = "manage:main"
+
+[tool.setuptools]
+py-modules = ["manage"]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7",
+    "ruff>=0.1",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+ignore = ["E501"]
